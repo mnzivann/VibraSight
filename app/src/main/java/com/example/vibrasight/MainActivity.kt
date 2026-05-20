@@ -4,9 +4,10 @@ INTEGRANTES: Jorge Ivan Muñiz Samano, Hazziel Enrique Ramirez Vilches
 PROYECTO: VibraSight
 */
 
-package com.example.vibrasight
+package com.tuempresa.vibrasight // Asegúrate de mantener tu package original
 
 import android.os.Bundle
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.*
@@ -21,30 +22,18 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.Query
+import com.google.firebase.messaging.FirebaseMessaging
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 
-// ==============================================================================
-// 1. MODELOS DE DATOS
-// ==============================================================================
-data class SensorData(
-    val sensor_pir: Boolean = false,
-    val luz_detectada: Boolean = false,
-    val distancia_cm: Double = 0.0
-)
+// Modelos
+data class SensorData(val sensor_pir: Boolean = false, val luz_detectada: Boolean = false, val distancia_cm: Double = 0.0)
+data class Alerta(val tipo: String = "", val descripcion: String = "")
 
-data class Alerta(
-    val tipo: String = "",
-    val descripcion: String = ""
-)
-
-// ==============================================================================
-// 2. VIEWMODEL (La conexión en tiempo real con Firebase)
-// ==============================================================================
-class TechGuardianViewModel : ViewModel() {
+// ViewModel actualizado a VibraSight
+class VibraSightViewModel : ViewModel() {
     private val db = FirebaseFirestore.getInstance()
 
-    // Estados observables para la UI
     private val _sensores = MutableStateFlow(SensorData())
     val sensores: StateFlow<SensorData> = _sensores
 
@@ -61,62 +50,56 @@ class TechGuardianViewModel : ViewModel() {
     }
 
     private fun escucharSensores() {
-        db.collection("sensores").document("lecturas_actuales")
-            .addSnapshotListener { snapshot, _ ->
-                if (snapshot != null && snapshot.exists()) {
-                    val data = snapshot.toObject(SensorData::class.java)
-                    if (data != null) _sensores.value = data
-                }
+        db.collection("sensores").document("lecturas_actuales").addSnapshotListener { snapshot, _ ->
+            if (snapshot != null && snapshot.exists()) {
+                snapshot.toObject(SensorData::class.java)?.let { _sensores.value = it }
             }
+        }
     }
 
     private fun escucharAlertas() {
-        // Obtenemos solo las últimas 5 alertas, ordenadas por tiempo (Requisito de la rúbrica)
-        db.collection("alertas")
-            .orderBy("timestamp", Query.Direction.DESCENDING)
-            .limit(5)
+        db.collection("alertas").orderBy("timestamp", Query.Direction.DESCENDING).limit(5)
             .addSnapshotListener { snapshot, _ ->
                 if (snapshot != null) {
-                    val lista = snapshot.documents.mapNotNull { it.toObject(Alerta::class.java) }
-                    _alertas.value = lista
+                    _alertas.value = snapshot.documents.mapNotNull { it.toObject(Alerta::class.java) }
                 }
             }
     }
 
     private fun escucharActuador() {
-        db.collection("actuadores").document("control")
-            .addSnapshotListener { snapshot, _ ->
-                if (snapshot != null && snapshot.exists()) {
-                    _actuadorActivo.value = snapshot.getBoolean("rele_principal") ?: false
-                }
+        db.collection("actuadores").document("control").addSnapshotListener { snapshot, _ ->
+            if (snapshot != null && snapshot.exists()) {
+                _actuadorActivo.value = snapshot.getBoolean("rele_principal") ?: false
             }
+        }
     }
 
-    // Función para enviar la orden al servidor Python
     fun toggleActuador(estado: Boolean) {
-        db.collection("actuadores").document("control")
-            .set(mapOf("rele_principal" to estado))
+        db.collection("actuadores").document("control").set(mapOf("rele_principal" to estado))
     }
 }
 
-// ==============================================================================
-// 3. INTERFAZ GRÁFICA (Jetpack Compose)
-// ==============================================================================
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent {
-            MaterialTheme {
-                TechGuardianApp()
+
+        // SUSCRIPCIÓN A NOTIFICACIONES: Esto conecta el teléfono con los avisos de Python
+        FirebaseMessaging.getInstance().subscribeToTopic("alertas_vibrasight")
+            .addOnCompleteListener { task ->
+                var msg = "Suscrito a alertas de VibraSight"
+                if (!task.isSuccessful) msg = "Fallo al suscribirse a notificaciones"
+                Log.d("FCM", msg)
             }
+
+        setContent {
+            MaterialTheme { VibraSightApp() }
         }
     }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun TechGuardianApp(viewModel: TechGuardianViewModel = viewModel()) {
-    // Recolectamos los estados del ViewModel
+fun VibraSightApp(viewModel: VibraSightViewModel = viewModel()) {
     val sensores by viewModel.sensores.collectAsState()
     val alertas by viewModel.alertas.collectAsState()
     val actuador by viewModel.actuadorActivo.collectAsState()
@@ -124,58 +107,37 @@ fun TechGuardianApp(viewModel: TechGuardianViewModel = viewModel()) {
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("TechGuardian Dashboard") },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.primaryContainer,
-                    titleContentColor = MaterialTheme.colorScheme.primary
-                )
+                title = { Text("VibraSight Dashboard") },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
             )
         }
     ) { padding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
-        ) {
-            // --- TARJETA DE CONTROL (Actuador) ---
+        Column(modifier = Modifier.fillMaxSize().padding(padding).padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            // Tarjeta Actuador
             Card(modifier = Modifier.fillMaxWidth()) {
-                Row(
-                    modifier = Modifier.padding(16.dp).fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(text = "Relé Principal (Puerta)", style = MaterialTheme.typography.titleMedium)
-                    Switch(
-                        checked = actuador,
-                        onCheckedChange = { viewModel.toggleActuador(it) }
-                    )
+                Row(modifier = Modifier.padding(16.dp).fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                    Text("Relé Principal", style = MaterialTheme.typography.titleMedium)
+                    Switch(checked = actuador, onCheckedChange = { viewModel.toggleActuador(it) })
                 }
             }
-
-            // --- TARJETA DE SENSORES (Telemetría) ---
+            // Tarjeta Sensores
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(16.dp)) {
-                    Text("Estado en Tiempo Real", style = MaterialTheme.typography.titleMedium)
+                    Text("Sensores en Tiempo Real", style = MaterialTheme.typography.titleMedium)
                     Spacer(modifier = Modifier.height(8.dp))
-                    Text("PIR (Movimiento): ${if (sensores.sensor_pir) "🚨 Detectado" else "✅ Despejado"}")
-                    Text("Iluminación: ${if (sensores.luz_detectada) "☀️ Luz" else "🌙 Oscuridad"}")
+                    Text("PIR: ${if (sensores.sensor_pir) "🚨 Movimiento" else "✅ Despejado"}")
+                    Text("Luz: ${if (sensores.luz_detectada) "☀️ Detectada" else "🌙 Oscuridad"}")
                     Text("Distancia: ${sensores.distancia_cm} cm")
                 }
             }
-
-            // --- HISTORIAL DE ALERTAS ---
-            Text("Últimas 5 Alertas (IA)", style = MaterialTheme.typography.titleMedium)
+            // Tarjeta Alertas
+            Text("Últimas Alertas", style = MaterialTheme.typography.titleMedium)
             LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 items(alertas) { alerta ->
-                    Card(
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)
-                    ) {
+                    Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)) {
                         Column(modifier = Modifier.padding(12.dp)) {
-                            Text(text = alerta.tipo, style = MaterialTheme.typography.titleSmall)
-                            Text(text = alerta.descripcion, style = MaterialTheme.typography.bodySmall)
+                            Text(alerta.tipo, style = MaterialTheme.typography.titleSmall)
+                            Text(alerta.descripcion, style = MaterialTheme.typography.bodySmall)
                         }
                     }
                 }
