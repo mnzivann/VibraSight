@@ -4,8 +4,7 @@ INTEGRANTES: Jorge Ivan Muñiz Samano, Hazziel Enrique Ramirez Vilches
 PROYECTO: VibraSight
 */
 
-package com.tuempresa.vibrasight // Asegúrate de mantener tu package original
-
+package com.example.vibrasight
 import android.os.Bundle
 import android.util.Log
 import androidx.activity.ComponentActivity
